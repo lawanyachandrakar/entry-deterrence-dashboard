@@ -5,11 +5,11 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-# ==========================================================
+# ============================================================
 # ENTRY DETERRENCE GAME
-# Improved static Bayesian game with private incumbent type
-# All numerical values are illustrative payoff units.
-# ==========================================================
+# WAI Project | Games of Incomplete Information
+# All payoff values are illustrative.
+# ============================================================
 
 st.set_page_config(
     page_title="Entry Deterrence Game",
@@ -17,29 +17,188 @@ st.set_page_config(
     layout="wide"
 )
 
+# ============================================================
+# 1. HELPER FUNCTIONS
+# ============================================================
+
+def decision_rule(payoff, stay_out=0.0):
+    """Compare entry payoff against the stay-out payoff."""
+    if payoff > stay_out + 1e-9:
+        return "ENTER"
+    if payoff < stay_out - 1e-9:
+        return "STAY OUT"
+    return "INDIFFERENT"
+
+
+def best_response(fight_payoff, accommodate_payoff):
+    """Find an incumbent type's payoff-maximizing response."""
+    if fight_payoff > accommodate_payoff + 1e-9:
+        return "Fight"
+    if accommodate_payoff > fight_payoff + 1e-9:
+        return "Accommodate"
+    return "Both actions"
+
+
+def bayesian_posterior(
+    prior,
+    signal,
+    p_warning_aggressive,
+    p_warning_accommodating
+):
+    """Calculate the posterior probability of an aggressive type."""
+    if signal == "No new signal":
+        return prior
+
+    if signal == "Warning signal":
+        likelihood_a = p_warning_aggressive
+        likelihood_c = p_warning_accommodating
+    else:
+        likelihood_a = 1 - p_warning_aggressive
+        likelihood_c = 1 - p_warning_accommodating
+
+    numerator = prior * likelihood_a
+    denominator = (
+        numerator + (1 - prior) * likelihood_c
+    )
+
+    if denominator <= 0:
+        return prior
+
+    return numerator / denominator
+
+
+def entrant_payoff_for_type(
+    response,
+    fight_payoff,
+    accommodate_payoff,
+    entry_cost
+):
+    """Entrant payoff conditional on an incumbent's response."""
+    if response == "Fight":
+        return fight_payoff - entry_cost
+
+    if response == "Accommodate":
+        return accommodate_payoff - entry_cost
+
+    # The incumbent is indifferent between both actions.
+    values = [
+        fight_payoff - entry_cost,
+        accommodate_payoff - entry_cost
+    ]
+    return min(values), max(values)
+
+
+def expected_entry_payoff(
+    probability_aggressive,
+    response_aggressive,
+    response_accommodating,
+    fight_payoff,
+    accommodate_payoff,
+    entry_cost
+):
+    """
+    Calculate the entrant's expected payoff using type-specific
+    incumbent best responses.
+
+    Returns a number if responses are unique.
+    Returns an interval if either type is indifferent.
+    """
+
+    payoff_a = entrant_payoff_for_type(
+        response_aggressive,
+        fight_payoff,
+        accommodate_payoff,
+        entry_cost
+    )
+
+    # CORRECTED: all arguments passed in the proper order.
+    payoff_c = entrant_payoff_for_type(
+        response_accommodating,
+        fight_payoff,
+        accommodate_payoff,
+        entry_cost
+    )
+
+    def bounds(value):
+        if isinstance(value, tuple):
+            return value
+        return value, value
+
+    a_low, a_high = bounds(payoff_a)
+    c_low, c_high = bounds(payoff_c)
+
+    low = (
+        probability_aggressive * a_low
+        + (1 - probability_aggressive) * c_low
+    )
+
+    high = (
+        probability_aggressive * a_high
+        + (1 - probability_aggressive) * c_high
+    )
+
+    if abs(high - low) < 1e-9:
+        return low
+
+    return low, high
+
+
+def payoff_midpoint(result):
+    """Midpoint for visualizing an interval; not an equilibrium."""
+    if isinstance(result, tuple):
+        return (result[0] + result[1]) / 2
+    return result
+
+
+def payoff_label(result):
+    """Format a payoff or payoff interval."""
+    if isinstance(result, tuple):
+        return f"{result[0]:.2f} to {result[1]:.2f}"
+    return f"{result:.2f}"
+
+
+def payoff_decision(result, stay_out):
+    """Make a decision while respecting payoff intervals."""
+    if isinstance(result, tuple):
+        low, high = result
+
+        if low > stay_out + 1e-9:
+            return "ENTER"
+        if high < stay_out - 1e-9:
+            return "STAY OUT"
+        return "MULTIPLE OUTCOMES POSSIBLE"
+
+    return decision_rule(result, stay_out)
+
+
+# ============================================================
+# 2. DASHBOARD TITLE
+# ============================================================
+
 st.title("The Entry Deterrence Game")
+
 st.subheader(
     "AI-Assisted Startup Market Entry Under Incomplete Information"
 )
 
 st.markdown(
     """
-    This dashboard models a startup deciding whether to enter a market
-    when the incumbent's competitive type is not directly observable.
-    It calculates incumbent best responses by type and evaluates the
-    entrant's expected payoff under its beliefs.
+    This dashboard studies how a startup's market-entry decision
+    depends on uncertainty about an incumbent's competitive type.
+
+    Explore type-specific incumbent payoffs, expected entry payoffs,
+    Bayesian belief updating, sensitivity analysis and scenarios.
     """
 )
 
 st.info(
-    "All payoffs and signal likelihoods are illustrative assumptions. "
-    "The static model is solved under the specified payoff structure; "
-    "it is not a prediction of any actual company's behaviour."
+    "All payoff values and signal probabilities are hypothetical. "
+    "They are not empirical estimates of real companies."
 )
 
-# ----------------------------------------------------------
-# 1. SIDEBAR: MODEL PARAMETERS
-# ----------------------------------------------------------
+# ============================================================
+# 3. SIDEBAR CONTROLS
+# ============================================================
 
 st.sidebar.header("Game Parameters")
 
@@ -53,16 +212,16 @@ prior_aggressive = st.sidebar.slider(
     step=5
 ) / 100
 
-st.sidebar.subheader("B. Entrant payoffs")
+st.sidebar.subheader("B. Entrant's payoffs")
 
-entrant_fight_payoff = st.sidebar.number_input(
-    "Entrant payoff if incumbent fights (before entry cost)",
+entrant_fight = st.sidebar.number_input(
+    "Entrant payoff if incumbent fights",
     value=-3.0,
     step=0.5
 )
 
-entrant_accommodate_payoff = st.sidebar.number_input(
-    "Entrant payoff if incumbent accommodates (before entry cost)",
+entrant_accommodate = st.sidebar.number_input(
+    "Entrant payoff if incumbent accommodates",
     value=4.0,
     step=0.5
 )
@@ -76,38 +235,37 @@ entry_cost = st.sidebar.slider(
 )
 
 stay_out_payoff = st.sidebar.number_input(
-    "Entrant payoff from staying out",
+    "Payoff from staying out",
     value=0.0,
     step=0.5
 )
 
-st.sidebar.subheader("C. Incumbent payoffs")
+st.sidebar.subheader("C. Incumbent's type-specific payoffs")
 
 st.sidebar.caption(
-    "Incumbent payoff values are shown before any additional "
-    "type-specific costs. Change them to test best responses."
+    "Each type selects the action that maximizes its own payoff."
 )
 
 aggressive_fight = st.sidebar.number_input(
-    "Aggressive type: payoff from fighting",
+    "Aggressive type: fight payoff",
     value=5.0,
     step=0.5
 )
 
 aggressive_accommodate = st.sidebar.number_input(
-    "Aggressive type: payoff from accommodating",
+    "Aggressive type: accommodate payoff",
     value=2.0,
     step=0.5
 )
 
 accommodating_fight = st.sidebar.number_input(
-    "Accommodating type: payoff from fighting",
+    "Accommodating type: fight payoff",
     value=0.0,
     step=0.5
 )
 
 accommodating_accommodate = st.sidebar.number_input(
-    "Accommodating type: payoff from accommodating",
+    "Accommodating type: accommodate payoff",
     value=4.0,
     step=0.5
 )
@@ -124,7 +282,7 @@ signal = st.sidebar.selectbox(
 )
 
 p_warning_aggressive = st.sidebar.slider(
-    "P(warning | aggressive)",
+    "P(warning | aggressive type)",
     min_value=0.05,
     max_value=0.95,
     value=0.80,
@@ -132,220 +290,69 @@ p_warning_aggressive = st.sidebar.slider(
 )
 
 p_warning_accommodating = st.sidebar.slider(
-    "P(warning | accommodating)",
+    "P(warning | accommodating type)",
     min_value=0.05,
     max_value=0.95,
     value=0.30,
     step=0.05
 )
 
-# ----------------------------------------------------------
-# 2. INCUMBENT BEST RESPONSES
-# ----------------------------------------------------------
+# ============================================================
+# 4. SOLVE THE STATIC GAME
+# ============================================================
 
-def incumbent_best_response(fight_payoff, accommodate_payoff):
-    """
-    Select the action that maximizes the incumbent type's payoff.
-    If payoffs are equal, both actions are best responses.
-    """
-
-    if fight_payoff > accommodate_payoff:
-        return "Fight"
-    elif accommodate_payoff > fight_payoff:
-        return "Accommodate"
-    else:
-        return "Both actions"
-
-
-aggressive_response = incumbent_best_response(
+response_a = best_response(
     aggressive_fight,
     aggressive_accommodate
 )
 
-accommodating_response = incumbent_best_response(
+response_c = best_response(
     accommodating_fight,
     accommodating_accommodate
 )
 
-
-def entrant_payoff_for_type(
-    response,
-    fight_payoff,
-    accommodate_payoff,
-    cost
-):
-    """Entrant payoff conditional on the incumbent's type."""
-
-    if response == "Fight":
-        return fight_payoff - cost
-
-    if response == "Accommodate":
-        return accommodate_payoff - cost
-
-    # If the incumbent is indifferent, its response is not unique.
-    # Return the range of possible entrant payoffs.
-    return (
-        min(fight_payoff, accommodate_payoff) - cost,
-        max(fight_payoff, accommodate_payoff) - cost
-    )
-
-
-# ----------------------------------------------------------
-# 3. STATIC BAYESIAN GAME SOLUTION
-# ----------------------------------------------------------
-
-def calculate_entry_payoff(
-    prior,
-    aggressive_response,
-    accommodating_response,
-    fight_payoff,
-    accommodate_payoff,
-    cost
-):
-    """
-    Calculate entrant expected payoff using the incumbent types'
-    best responses.
-
-    If a type is indifferent, return a payoff interval because
-    its action is not uniquely determined.
-    """
-
-    aggressive_result = entrant_payoff_for_type(
-        aggressive_response,
-        fight_payoff,
-        accommodate_payoff,
-        cost
-    )
-
-    accommodating_result = entrant_payoff_for_type(
-        accommodating_response,
-        fight_payoff,
-        accommodate_payoff,
-        cost
-    )
-
-    if (
-        isinstance(aggressive_result, tuple)
-        or isinstance(accommodating_result, tuple)
-    ):
-        def bounds(value):
-            if isinstance(value, tuple):
-                return value
-            return (value, value)
-
-        a_low, a_high = bounds(aggressive_result)
-        c_low, c_high = bounds(accommodating_result)
-
-        lower = prior * a_low + (1 - prior) * c_low
-        upper = prior * a_high + (1 - prior) * c_high
-
-        return lower, upper
-
-    return (
-        prior * aggressive_result
-        + (1 - prior) * accommodating_result
-    )
-
-
-entry_result = calculate_entry_payoff(
+entry_result = expected_entry_payoff(
     prior_aggressive,
-    aggressive_response,
-    accommodating_response,
-    entrant_fight_payoff,
-    entrant_accommodate_payoff,
+    response_a,
+    response_c,
+    entrant_fight,
+    entrant_accommodate,
     entry_cost
 )
 
+decision = payoff_decision(
+    entry_result,
+    stay_out_payoff
+)
 
-def classify_entry_result(result, stay_out):
-    """Determine the entrant's preferred action."""
+# ============================================================
+# 5. BAYESIAN BELIEF UPDATING
+# ============================================================
 
-    if isinstance(result, tuple):
-        lower, upper = result
-
-        if lower > stay_out:
-            return "ENTER"
-        if upper < stay_out:
-            return "STAY OUT"
-        return "MULTIPLE OUTCOMES POSSIBLE"
-
-    if result > stay_out:
-        return "ENTER"
-    if result < stay_out:
-        return "STAY OUT"
-
-    return "INDIFFERENT"
-
-
-decision = classify_entry_result(entry_result, stay_out_payoff)
-
-if isinstance(entry_result, tuple):
-    payoff_display = (
-        f"{entry_result[0]:.2f} to {entry_result[1]:.2f}"
-    )
-else:
-    payoff_display = f"{entry_result:.2f}"
-
-
-# ----------------------------------------------------------
-# 4. BAYESIAN BELIEF UPDATE: OPTIONAL EXTENSION
-# ----------------------------------------------------------
-
-def posterior_probability(
-    prior,
-    observed_signal,
-    p_warning_aggressive,
-    p_warning_accommodating
-):
-    """Apply Bayes' rule to an observed signal."""
-
-    if observed_signal == "No new signal":
-        return prior
-
-    if observed_signal == "Warning signal":
-        likelihood_a = p_warning_aggressive
-        likelihood_c = p_warning_accommodating
-    else:
-        likelihood_a = 1 - p_warning_aggressive
-        likelihood_c = 1 - p_warning_accommodating
-
-    numerator = prior * likelihood_a
-    denominator = (
-        prior * likelihood_a
-        + (1 - prior) * likelihood_c
-    )
-
-    if denominator == 0:
-        return prior
-
-    return numerator / denominator
-
-
-posterior_aggressive = posterior_probability(
+posterior_aggressive = bayesian_posterior(
     prior_aggressive,
     signal,
     p_warning_aggressive,
     p_warning_accommodating
 )
 
-posterior_entry_result = calculate_entry_payoff(
+posterior_result = expected_entry_payoff(
     posterior_aggressive,
-    aggressive_response,
-    accommodating_response,
-    entrant_fight_payoff,
-    entrant_accommodate_payoff,
+    response_a,
+    response_c,
+    entrant_fight,
+    entrant_accommodate,
     entry_cost
 )
 
-posterior_decision = classify_entry_result(
-    posterior_entry_result,
+posterior_decision = payoff_decision(
+    posterior_result,
     stay_out_payoff
 )
 
-
-# ----------------------------------------------------------
-# 5. DASHBOARD METRICS
-# ----------------------------------------------------------
+# ============================================================
+# 6. EXECUTIVE DASHBOARD
+# ============================================================
 
 st.header("Executive Dashboard")
 
@@ -363,8 +370,8 @@ col2.metric(
 )
 
 col3.metric(
-    "Entry payoff",
-    payoff_display
+    "Expected entry payoff",
+    payoff_label(entry_result)
 )
 
 col4.metric(
@@ -373,41 +380,34 @@ col4.metric(
 )
 
 st.caption(
-    "The posterior is used for the optional signal scenario. "
-    "The static Bayesian game uses the prior belief; the signal "
-    "extension represents a later decision after new information."
+    "The static game uses prior beliefs. The posterior represents "
+    "an optional decision scenario after observing a signal."
 )
 
 st.divider()
 
-# ----------------------------------------------------------
-# 6. CHART 1: PAYOFF VS. PRIOR PROBABILITY
-# ----------------------------------------------------------
+# ============================================================
+# 7. CHART 1: EXPECTED PAYOFF VS. AGGRESSION PROBABILITY
+# ============================================================
 
-st.header("1. Expected Entry Payoff vs. Aggression Probability")
+st.header("1. Expected Payoff vs. Aggression Probability")
 
 probabilities = np.linspace(0, 1, 101)
 chart1_rows = []
 
 for p in probabilities:
-    result = calculate_entry_payoff(
+    result = expected_entry_payoff(
         p,
-        aggressive_response,
-        accommodating_response,
-        entrant_fight_payoff,
-        entrant_accommodate_payoff,
+        response_a,
+        response_c,
+        entrant_fight,
+        entrant_accommodate,
         entry_cost
     )
 
-    if isinstance(result, tuple):
-        low, high = result
-        payoff = (low + high) / 2
-    else:
-        payoff = result
-
     chart1_rows.append({
         "Aggressive probability": p,
-        "Expected entry payoff": payoff
+        "Expected entry payoff": payoff_midpoint(result)
     })
 
 chart1_df = pd.DataFrame(chart1_rows)
@@ -436,9 +436,14 @@ fig1.update_layout(template="plotly_white")
 
 st.plotly_chart(fig1, use_container_width=True)
 
-# ----------------------------------------------------------
-# 7. CHART 2: ENTRY COST SENSITIVITY
-# ----------------------------------------------------------
+st.caption(
+    "If an incumbent type is indifferent between actions, the chart "
+    "plots the midpoint of the resulting payoff interval for display."
+)
+
+# ============================================================
+# 8. CHART 2: ENTRY COST SENSITIVITY
+# ============================================================
 
 st.header("2. Entry Cost Sensitivity")
 
@@ -446,24 +451,18 @@ cost_values = np.linspace(0, 5, 51)
 cost_rows = []
 
 for cost in cost_values:
-    result = calculate_entry_payoff(
+    result = expected_entry_payoff(
         prior_aggressive,
-        aggressive_response,
-        accommodating_response,
-        entrant_fight_payoff,
-        entrant_accommodate_payoff,
+        response_a,
+        response_c,
+        entrant_fight,
+        entrant_accommodate,
         cost
-    )
-
-    payoff = (
-        sum(result) / 2
-        if isinstance(result, tuple)
-        else result
     )
 
     cost_rows.append({
         "Entry cost": cost,
-        "Expected entry payoff": payoff
+        "Expected entry payoff": payoff_midpoint(result)
     })
 
 cost_df = pd.DataFrame(cost_rows)
@@ -472,17 +471,21 @@ fig2 = px.line(
     cost_df,
     x="Entry cost",
     y="Expected entry payoff",
-    title="Effect of Entry Costs on the Entrant's Payoff"
+    title="Effect of Entry Costs on Expected Payoff"
 )
 
-fig2.add_hline(y=stay_out_payoff, line_dash="dash")
+fig2.add_hline(
+    y=stay_out_payoff,
+    line_dash="dash"
+)
+
 fig2.update_layout(template="plotly_white")
 
 st.plotly_chart(fig2, use_container_width=True)
 
-# ----------------------------------------------------------
-# 8. CHART 3: TYPE-SPECIFIC PAYOFFS AND BEST RESPONSES
-# ----------------------------------------------------------
+# ============================================================
+# 9. CHART 3: INCUMBENT PAYOFFS AND BEST RESPONSES
+# ============================================================
 
 st.header("3. Incumbent Payoffs and Best Responses")
 
@@ -490,26 +493,22 @@ incumbent_df = pd.DataFrame([
     {
         "Incumbent type": "Aggressive",
         "Action": "Fight",
-        "Incumbent payoff": aggressive_fight,
-        "Entrant payoff before cost": entrant_fight_payoff
+        "Incumbent payoff": aggressive_fight
     },
     {
         "Incumbent type": "Aggressive",
         "Action": "Accommodate",
-        "Incumbent payoff": aggressive_accommodate,
-        "Entrant payoff before cost": entrant_accommodate_payoff
+        "Incumbent payoff": aggressive_accommodate
     },
     {
         "Incumbent type": "Accommodating",
         "Action": "Fight",
-        "Incumbent payoff": accommodating_fight,
-        "Entrant payoff before cost": entrant_fight_payoff
+        "Incumbent payoff": accommodating_fight
     },
     {
         "Incumbent type": "Accommodating",
         "Action": "Accommodate",
-        "Incumbent payoff": accommodating_accommodate,
-        "Entrant payoff before cost": entrant_accommodate_payoff
+        "Incumbent payoff": accommodating_accommodate
     }
 ])
 
@@ -519,35 +518,39 @@ fig3 = px.bar(
     y="Incumbent payoff",
     color="Incumbent type",
     barmode="group",
-    title="Incumbent Payoffs by Type and Action",
-    hover_data=["Entrant payoff before cost"]
+    title="Incumbent Payoffs by Type and Action"
 )
 
 fig3.update_layout(template="plotly_white")
-st.plotly_chart(fig3, use_container_width=True)
 
-st.markdown("**Optimal response by incumbent type**")
+st.plotly_chart(fig3, use_container_width=True)
 
 response_df = pd.DataFrame([
     {
         "Incumbent type": "Aggressive",
         "Fight payoff": aggressive_fight,
         "Accommodate payoff": aggressive_accommodate,
-        "Best response": aggressive_response
+        "Best response": response_a
     },
     {
         "Incumbent type": "Accommodating",
         "Fight payoff": accommodating_fight,
         "Accommodate payoff": accommodating_accommodate,
-        "Best response": accommodating_response
+        "Best response": response_c
     }
 ])
 
-st.dataframe(response_df, use_container_width=True, hide_index=True)
+st.markdown("**Incumbent best-response table**")
 
-# ----------------------------------------------------------
-# 9. CHART 4: DECISION HEATMAP
-# ----------------------------------------------------------
+st.dataframe(
+    response_df,
+    use_container_width=True,
+    hide_index=True
+)
+
+# ============================================================
+# 10. CHART 4: DECISION HEATMAP
+# ============================================================
 
 st.header("4. Entry Decision Heatmap")
 
@@ -560,22 +563,16 @@ for cost in heat_costs:
     row = []
 
     for p in heat_probabilities:
-        result = calculate_entry_payoff(
+        result = expected_entry_payoff(
             p,
-            aggressive_response,
-            accommodating_response,
-            entrant_fight_payoff,
-            entrant_accommodate_payoff,
+            response_a,
+            response_c,
+            entrant_fight,
+            entrant_accommodate,
             cost
         )
 
-        payoff = (
-            sum(result) / 2
-            if isinstance(result, tuple)
-            else result
-        )
-
-        row.append(payoff)
+        row.append(payoff_midpoint(result))
 
     heat_values.append(row)
 
@@ -587,7 +584,7 @@ fig4 = go.Figure(
         colorscale="RdYlGn",
         colorbar={"title": "Entry payoff"},
         hovertemplate=(
-            "Aggression probability: %{x:.0%}<br>"
+            "Aggressive probability: %{x:.0%}<br>"
             "Entry cost: %{y:.2f}<br>"
             "Expected payoff: %{z:.2f}<extra></extra>"
         )
@@ -602,16 +599,17 @@ fig4.update_layout(
 )
 
 fig4.update_xaxes(tickformat=".0%")
+
 st.plotly_chart(fig4, use_container_width=True)
 
-# ----------------------------------------------------------
-# 10. CHART 5: BELIEF UPDATING
-# ----------------------------------------------------------
+# ============================================================
+# 11. CHART 5: BAYESIAN BELIEF UPDATING
+# ============================================================
 
 st.header("5. Bayesian Belief Updating")
 
 belief_df = pd.DataFrame({
-    "Belief": ["Prior", "Posterior"],
+    "Belief stage": ["Prior", "Posterior"],
     "Probability of aggressive type": [
         prior_aggressive,
         posterior_aggressive
@@ -620,10 +618,10 @@ belief_df = pd.DataFrame({
 
 fig5 = px.bar(
     belief_df,
-    x="Belief",
+    x="Belief stage",
     y="Probability of aggressive type",
     text="Probability of aggressive type",
-    title="Belief Before and After an Observed Signal"
+    title="Prior vs. Posterior Belief"
 )
 
 fig5.update_traces(
@@ -631,55 +629,61 @@ fig5.update_traces(
     textposition="outside"
 )
 
-fig5.update_yaxes(range=[0, 1], tickformat=".0%")
+fig5.update_yaxes(
+    range=[0, 1],
+    tickformat=".0%"
+)
+
 fig5.update_layout(template="plotly_white")
 
 st.plotly_chart(fig5, use_container_width=True)
 
 st.markdown(
     f"""
-    After the selected signal, the probability of an aggressive type
-    is **{posterior_aggressive:.1%}**. This result depends on the
-    assumed signal likelihoods and is not an empirical estimate.
+    After the selected signal, the posterior probability of an
+    aggressive incumbent is **{posterior_aggressive:.1%}**.
+
+    Under this updated belief, the preliminary preferred action is
+    **{posterior_decision}**.
     """
 )
 
-# ----------------------------------------------------------
-# 11. CHART 6: SCENARIO COMPARISON
-# ----------------------------------------------------------
+# ============================================================
+# 12. CHART 6: SCENARIO COMPARISON
+# ============================================================
 
 st.header("6. Scenario Comparison")
 
 scenario_specs = [
-    ("Optimistic", 0.20, entrant_accommodate_payoff + 1),
-    ("Baseline", prior_aggressive, entrant_accommodate_payoff),
-    ("Pessimistic", 0.80, max(0, entrant_accommodate_payoff - 2))
+    ("Optimistic", 0.20, entrant_accommodate + 1),
+    ("Baseline", prior_aggressive, entrant_accommodate),
+    ("Pessimistic", 0.80, max(0, entrant_accommodate - 2))
 ]
 
 scenario_rows = []
 
-for name, probability, accommodation_payoff in scenario_specs:
-    result = calculate_entry_payoff(
+for name, probability, market_payoff in scenario_specs:
+    # CORRECTED: the same valid payoff function is used for every
+    # scenario, and the incumbent's best responses are retained.
+    result = expected_entry_payoff(
         probability,
-        aggressive_response,
-        accommodating_response,
-        entrant_fight_payoff,
-        accommodation_payoff,
+        response_a,
+        response_c,
+        entrant_fight,
+        market_payoff,
         entry_cost
-    )
-
-    payoff = (
-        sum(result) / 2
-        if isinstance(result, tuple)
-        else result
     )
 
     scenario_rows.append({
         "Scenario": name,
         "Aggressive probability": probability,
-        "Accommodation payoff": accommodation_payoff,
-        "Expected entry payoff": payoff,
-        "Preferred action": decision_rule(payoff)
+        "Accommodation payoff": market_payoff,
+        "Expected entry payoff": payoff_midpoint(result),
+        "Payoff range": payoff_label(result),
+        "Preferred action": payoff_decision(
+            result,
+            stay_out_payoff
+        )
     })
 
 scenario_df = pd.DataFrame(scenario_rows)
@@ -693,73 +697,92 @@ fig6 = px.bar(
     title="Entry Payoff Under Alternative Scenarios"
 )
 
-fig6.add_hline(y=stay_out_payoff, line_dash="dash")
-fig6.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+fig6.add_hline(
+    y=stay_out_payoff,
+    line_dash="dash"
+)
+
+fig6.update_traces(
+    texttemplate="%{text:.2f}",
+    textposition="outside"
+)
+
 fig6.update_layout(template="plotly_white")
 
 st.plotly_chart(fig6, use_container_width=True)
-st.dataframe(scenario_df.round(3), use_container_width=True, hide_index=True)
 
-# ----------------------------------------------------------
-# 12. EQUILIBRIUM INTERPRETATION
-# ----------------------------------------------------------
+st.markdown("**Scenario results**")
+
+st.dataframe(
+    scenario_df.round(3),
+    use_container_width=True,
+    hide_index=True
+)
+
+# ============================================================
+# 13. EQUILIBRIUM INTERPRETATION
+# ============================================================
+
+st.divider()
 
 st.header("Equilibrium Interpretation")
 
 st.markdown(
     f"""
-    - Aggressive incumbent best response: **{aggressive_response}**
-    - Accommodating incumbent best response: **{accommodating_response}**
-    - Entrant's prior probability of the aggressive type: **{prior_aggressive:.0%}**
-    - Entrant's expected payoff from entry: **{payoff_display}**
-    - Entrant's payoff from staying out: **{stay_out_payoff:.2f}**
-    - Entrant's preferred action: **{decision}**
+    - Aggressive incumbent's best response: **{response_a}**
+    - Accommodating incumbent's best response: **{response_c}**
+    - Entrant's prior probability of aggression: **{prior_aggressive:.0%}**
+    - Expected entry payoff: **{payoff_label(entry_result)}**
+    - Stay-out payoff: **{stay_out_payoff:.2f}**
+    - Preferred entrant action: **{decision}**
     """
 )
 
 st.markdown(
     """
-    Under the static model, the incumbent's type-dependent actions
-    are best responses to entry. The entrant chooses its action using
-    its prior beliefs and the expected payoff implied by those responses.
+    The incumbent's type-specific actions are selected to maximize
+    its payoff if entry occurs. The entrant then compares the expected
+    payoff from entry with its payoff from staying out.
 
-    When each type has a unique best response and the entrant's
-    decision is strict, the resulting strategies form a pure-strategy
-    Bayesian Nash Equilibrium of this model.
+    If each incumbent type has a unique best response and the entrant
+    has a strict preferred action, the resulting strategy profile
+    constitutes a pure-strategy Bayesian Nash Equilibrium of this
+    specified static game.
 
-    If a type is indifferent, or if the entrant is indifferent, multiple
-    equilibrium strategies may be possible. The model must then report
-    the tie rather than claim a unique equilibrium.
+    If a type is indifferent between actions, the entrant's payoff
+    may be an interval. The model reports this ambiguity rather than
+    automatically claiming a unique equilibrium.
+
+    The optional signal experiment illustrates belief updating. It
+    does not by itself solve a dynamic Perfect Bayesian Equilibrium.
     """
 )
 
-# ----------------------------------------------------------
-# 13. ASSUMPTIONS AND ETHICS
-# ----------------------------------------------------------
+# ============================================================
+# 14. ASSUMPTIONS AND RESPONSIBLE AI
+# ============================================================
 
 st.header("Assumptions, Limitations and Responsible AI")
 
 st.markdown(
     """
-    1. All payoff values are illustrative and expressed in normalized
-       payoff units.
-    2. The entrant cannot observe the incumbent's type before making
-       its entry decision.
-    3. The incumbent observes its own type and chooses its response
-       to maximize its own payoff if entry occurs.
-    4. The static model uses prior beliefs. The signal experiment is
-       a separate extension in which the entrant receives information.
-    5. The model does not establish real-world predictive accuracy.
-    6. AI-assisted code and interpretations must be checked against
-       the mathematical model.
-    7. Any empirical application requires documented, credible data
-       and justified parameter estimates.
+    1. All payoffs are hypothetical normalized units.
+    2. The entrant does not observe the incumbent's type before entry.
+    3. The incumbent knows its own type and chooses its best response.
+    4. The static game uses prior beliefs; the signal extension
+       illustrates a separate decision after new information.
+    5. No real-world predictive accuracy is claimed.
+    6. AI-assisted code and interpretations must be verified.
+    7. Real-world application requires credible data and justified
+       payoff assumptions.
     """
 )
 
-# ----------------------------------------------------------
-# 14. DOWNLOAD DATA
-# ----------------------------------------------------------
+# ============================================================
+# 15. DOWNLOAD RESULTS
+# ============================================================
+
+st.divider()
 
 st.header("Download Simulation Results")
 
@@ -767,72 +790,70 @@ sensitivity_rows = []
 
 for p in np.linspace(0, 1, 21):
     for cost in np.arange(0, 5.01, 0.5):
-        result = calculate_entry_payoff(
+        result = expected_entry_payoff(
             p,
-            aggressive_response,
-            accommodating_response,
-            entrant_fight_payoff,
-            entrant_accommodate_payoff,
+            response_a,
+            response_c,
+            entrant_fight,
+            entrant_accommodate,
             cost
-        )
-
-        payoff = (
-            sum(result) / 2
-            if isinstance(result, tuple)
-            else result
         )
 
         sensitivity_rows.append({
             "Aggressive prior": p,
             "Entry cost": cost,
-            "Expected entry payoff": payoff,
-            "Preferred action": decision_rule(payoff)
+            "Expected entry payoff": payoff_midpoint(result),
+            "Payoff range": payoff_label(result),
+            "Preferred action": payoff_decision(
+                result,
+                stay_out_payoff
+            )
         })
 
 sensitivity_df = pd.DataFrame(sensitivity_rows)
 
 incumbent_payoff_table = pd.DataFrame([
     {
-        "Type": "Aggressive",
+        "Incumbent type": "Aggressive",
         "Fight payoff": aggressive_fight,
         "Accommodate payoff": aggressive_accommodate,
-        "Best response": aggressive_response
+        "Best response": response_a
     },
     {
-        "Type": "Accommodating",
+        "Incumbent type": "Accommodating",
         "Fight payoff": accommodating_fight,
         "Accommodate payoff": accommodating_accommodate,
-        "Best response": accommodating_response
+        "Best response": response_c
     }
 ])
 
-c1, c2, c3 = st.columns(3)
+col1, col2, col3 = st.columns(3)
 
-with c1:
+with col1:
     st.download_button(
-        "Download Sensitivity CSV",
+        label="Download Sensitivity CSV",
         data=sensitivity_df.to_csv(index=False).encode("utf-8"),
         file_name="entry_deterrence_sensitivity.csv",
         mime="text/csv"
     )
 
-with c2:
+with col2:
     st.download_button(
-        "Download Scenarios CSV",
+        label="Download Scenarios CSV",
         data=scenario_df.to_csv(index=False).encode("utf-8"),
         file_name="entry_deterrence_scenarios.csv",
         mime="text/csv"
     )
 
-with c3:
+with col3:
     st.download_button(
-        "Download Incumbent Payoffs CSV",
+        label="Download Incumbent Payoffs CSV",
         data=incumbent_payoff_table.to_csv(index=False).encode("utf-8"),
         file_name="incumbent_type_payoffs.csv",
         mime="text/csv"
     )
 
 st.caption(
-    "Working with AI | Games of Incomplete Information | "
+    "WAI Project | Games of Incomplete Information | "
     "Illustrative academic simulation"
 )
